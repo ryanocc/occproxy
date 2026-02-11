@@ -1,49 +1,55 @@
-// /api/proxy.js  (Node serverless)
+// /api/proxy.js (Edge runtime)
+export const config = { runtime: 'edge' };
 
-// Allow CORS preflight from the browser
-function handlePreflight(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', '*');
-  res.status(204).end();
-}
+export default async function handler(req) {
+  const { searchParams } = new URL(req.url);
+  const target = searchParams.get('url');
 
-export default async function handler(req, res) {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+        'Access-Control-Allow-Headers': '*',
+      },
+    });
+  }
+
+  if (!target) {
+    return new Response(JSON.stringify({ error: 'Missing ?url=' }), {
+      status: 400,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/json',
+      },
+    });
+  }
+
   try {
-    if (req.method === 'OPTIONS') return handlePreflight(req, res);
-
-    const target = req.query.url;
-    if (!target) {
-      res.status(400).json({ error: 'Missing ?url=' });
-      return;
-    }
-
-    // Fetch upstream (Node 18+ has global fetch in Vercel)
     const upstream = await fetch(target, {
       headers: { 'User-Agent': 'TfGM-OCC-Map/1.0' },
-      // You can add caching headers or revalidation here if needed
     });
 
-    // Mirror upstream status & content-type, but open CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Vary', 'Origin');
+    // forward headers + open CORS
+    const headers = new Headers(upstream.headers);
+    headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Vary', 'Origin');
 
-    // Forward content-type if present (JSON, XML, etc.)
-    const ct = upstream.headers.get('content-type');
-    if (ct) res.setHeader('Content-Type', ct);
-
-    // Stream if possible; otherwise buffer
-    if (upstream.body && typeof upstream.body.pipe === 'function') {
-      res.status(upstream.status);
-      upstream.body.pipe(res);
-    } else {
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      res.status(upstream.status).send(buf);
-    }
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers,
+    });
   } catch (e) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res
-      .status(500)
-      .json({ error: 'Proxy error', detail: String(e?.message || e) });
+    return new Response(
+      JSON.stringify({ error: 'Proxy error', detail: String(e?.message || e) }),
+      {
+        status: 500,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Content-Type': 'application/json',
+        },
+      }
+    );
   }
 }
